@@ -688,6 +688,39 @@ async function sendPayloadInPlace(name, tile) {
     }
 }
 
+// =======================================================
+// Nova função de Auto-load de Payloads em Sequência
+// =======================================================
+async function runAutoloadSequence() {
+    if (payloadSendBusy) return;
+    payloadSendBusy = true;
+
+    const payloadQueue = [
+        "kstuff.elf",
+        "nanodns.elf",
+        "smp.elf",
+        "backpork.elf"
+    ];
+
+    stage("Iniciando injeção automática...", "ok");
+
+    for (const payloadName of payloadQueue) {
+        try {
+            stage("Enviando " + payloadName + "...", "ok");
+            const result = await sendPayloadToElfldr(payloadName);
+            flushMark("AUTOLOAD-SUCCESS", payloadName);
+            
+            // Pausa de 1.5s entre o envio de cada payload para estabilidade
+            await new Promise(r => setTimeout(r, 1500));
+        } catch (error) {
+            flushMark("AUTOLOAD-FAILED", payloadName + ": " + (error.message || error));
+        }
+    }
+
+    payloadSendBusy = false;
+    stage("SUCESSO! Todos os payloads foram carregados.", "ok");
+}
+
 {
     const tiles = payloadMenuEl.getElementsByTagName("a");
     for (let i = 0; i < tiles.length; ++i) {
@@ -1467,6 +1500,11 @@ async function runLadder() {
         flushMark("ELFLDR-MENU-INPAGE",
             "no-navigation-parked-racers-and-fds-remain-owned-port=9021");
         showPayloadMenu();
+
+        // =======================================================
+        // CHAMADA AUTOMÁTICA DO AUTO-LOAD APÓS EXPLOIT CONCLUÍDO
+        // =======================================================
+        runAutoloadSequence();
     }
 }
 
@@ -1501,10 +1539,6 @@ async function bootPrimitiveAndChain() {
         stage("running the webkit bug -- placement is ~1 attempt in 3, it "
             + "retries itself");
 
-        // A killed/reloaded WebProcess can restore this history entry with the
-        // previous 65k-object SerializedScriptValue graph still attached.  If
-        // we build the next graph before releasing it, 9.00 can hit its memory
-        // ceiling almost immediately.  Purge it before any exploit allocation.
         flushMark("PRIMITIVE-HISTORY-PURGE-PRE", "replace-state-null");
         try {
             history.replaceState(null, "");
@@ -1523,8 +1557,6 @@ async function bootPrimitiveAndChain() {
             maxAttempts: MAX_ATTEMPTS,
             onEvent(tag, detail, attempt) {
                 if (tag === "ATTEMPT-START") {
-                    // This is before the large graph is built, so make the
-                    // checkpoint durable if the WebProcess dies during setup.
                     flushMark(tag, detail);
                     stage("exploit attempt " + attempt + " -- waiting for placement");
                 } else {
@@ -1540,21 +1572,14 @@ async function bootPrimitiveAndChain() {
         });
         nogcHard.carrier = carrier;
         installWindowP(carrier, { onEvent: queueEvent });
-        // installWindowP() promotes the primitive to a self-contained pair of
-        // real typed arrays.  Keeping the obsolete fake carrier here defeats
-        // core.js's release and can retain the 72 MB addrof carrier graph.
         nogcHard.carrier = null;
         if (typeof globalThis.gc === "function") {
             try { globalThis.gc(); } catch (e) { }
         }
-        // Give JSC an idle turn to reclaim the released carrier/groom before
-        // prepare() creates its worker ROP stack and the kernel-stage arenas.
         await new Promise(resolve => setTimeout(resolve, 1000));
         flushMark("PRIMITIVE-MEMORY-RELIEF",
             "fake-carrier-dropped=1-history-state-null="
             + (history.state === null));
-        // The landing page preloads the small UI image so it remains visually
-        // stable while this page transitions into its live log view.
         flushMark("PRIMITIVE-UP", "attempt=" + carrier.attempts
             + "-paired=" + pairStatus.promoted
             + "-released=" + fakeCellReleased());
@@ -1722,7 +1747,6 @@ function lastRunText() {
     flushMark("LATCH-READ", "set=" + (l.set ? 1 : 0)
         + "-detail=" + clean(l.detail || ""));
 
-    // ?auto=1 clears the latch instead of asking; reboot between runs
     if (l.set && AUTOCLEAR) {
         flushMark("LATCH-AUTOCLEAR", clean(l.detail || ""));
         await latch.clear();
